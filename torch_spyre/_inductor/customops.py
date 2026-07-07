@@ -462,6 +462,40 @@ def _(
     return input.new_empty(shape)
 
 
+@torch.library.custom_op(
+    "spyre::cat_via_cpu", mutates_args=(), device_types="spyre"
+)
+def spyre_cat_via_cpu(
+    inputs: Sequence[torch.Tensor],
+    dim: int,
+) -> torch.Tensor:
+    """
+    Concatenation that executes on CPU when the on-device path would land a
+    subsequent input mid-stick along the concat dim. torch-spyre's SDSC codegen
+    round-trips DMA writes through stick-granular addresses, so a slice write
+    starting at byte offset ``N * bytes_per_elem`` where ``N % elems_per_stick
+    != 0`` is silently rounded down to the previous stick boundary, corrupting
+    the tail of the previous input.
+
+    This falls back to CPU only when at least one boundary is non-stick-aligned;
+    aligned cats stay on-device via the standard lowering.
+    """
+    warn_fallback("torch.ops.spyre.cat_via_cpu")
+    inputs_cpu = [t.to("cpu") for t in inputs]
+    result_cpu = torch.cat(inputs_cpu, dim=dim)
+    return result_cpu.to(inputs[0].device)
+
+
+@spyre_cat_via_cpu.register_fake
+def _(
+    inputs: Sequence[torch.Tensor],
+    dim: int,
+) -> torch.Tensor:
+    output_size = list(inputs[0].size())
+    output_size[dim] = sum(t.size(dim) for t in inputs)
+    return inputs[0].new_empty(output_size)
+
+
 @torch.library.custom_op("spyre::min_dim_int64_fallback", mutates_args=())
 def min_dim_int64_fallback(
     input: torch.Tensor, dim: int, keepdim: bool = False

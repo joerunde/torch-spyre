@@ -961,10 +961,39 @@ def spyre_copy_(dst, src, non_blocking=False):
 
 @register_spyre_lowering(torch.ops.aten.cat.default, type_promotion_kind=None)
 def lower_cat(inputs, dim=0):
+    # Route non-stick-aligned cats through a CPU fallback: SDSC codegen rounds
+    # the slice-write byte address down to the previous stick boundary, so a
+    # subsequent input that starts mid-stick along dim clobbers the previous
+    # input's tail.
+    dtype = inputs[0].get_dtype()
+    stick_size = get_elem_in_stick(dtype)
+    if dim < 0:
+        dim = len(inputs[0].get_size()) + dim
+    stick_dim = len(inputs[0].get_size()) - 1
+    if dim == stick_dim:
+        running = 0
+        mid_stick = False
+        for inp in inputs[:-1]:
+            try:
+                running += int(inp.get_size()[dim])
+            except (TypeError, ValueError):
+                mid_stick = True
+                break
+            if running % stick_size != 0:
+                mid_stick = True
+                break
+        if mid_stick:
+            return ir.TensorBox.create(
+                ir.FallbackKernel.create(
+                    torch.ops.spyre.cat_via_cpu.default,
+                    inputs,
+                    dim,
+                )
+            )
+
     output_size = list(inputs[0].get_size())
     output_size[dim] = sum(x.get_size()[dim] for x in inputs)
 
-    dtype = inputs[0].get_dtype()
     device = inputs[0].get_device()
     output = lowering.empty(output_size, dtype=dtype, device=device)
 

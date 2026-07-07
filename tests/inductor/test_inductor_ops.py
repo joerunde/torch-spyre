@@ -5519,6 +5519,22 @@ class TestOps(unittest.TestCase, metaclass=ParameterizedTestMeta):
 
         self.compare_with_cpu(fn, *tensors)
 
+    @pytest.mark.filterwarnings(
+        "ignore::torch_spyre.ops.fallbacks.FallbackWarning"
+    )
+    def test_cat_last_dim_non_stick_aligned_first_input(self):
+        # First operand's last-dim size (72) is not a multiple of the fp16
+        # stick element count (64), so the on-device SliceView write for the
+        # second operand would land mid-stick. ``lower_cat`` detects this and
+        # routes through ``torch.ops.spyre.cat_via_cpu``.
+        a = cached_randn((8, 72), dtype=torch.float16)
+        b = cached_randn((8, 56), dtype=torch.float16)
+
+        def fn(a, b):
+            return torch.cat([a, b], dim=-1)
+
+        self.compare_with_cpu(fn, a, b)
+
     def test_pad_cpu(self, x, pad):
         """Compiled torch.nn.functional.pad (constant zero) on Spyre matches CPU."""
 
